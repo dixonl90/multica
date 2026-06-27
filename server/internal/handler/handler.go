@@ -31,6 +31,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/storage"
 	"github.com/multica-ai/multica/server/internal/util"
+	"github.com/multica-ai/multica/server/internal/util/secretbox"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/featureflag"
 )
@@ -197,7 +198,13 @@ type Handler struct {
 	// unless Slack is configured; GetChatChannelHistory then reports "no channel
 	// integration". A future platform satisfies the same reader interface.
 	SlackHistory ChatChannelHistoryReader
-	cfg          Config
+	// ForgejoSecretBox encrypts/decrypts per-workspace Forgejo access tokens
+	// and webhook secrets at rest. Nil when MULTICA_FORGEJO_SECRET_KEY is
+	// unset; the Forgejo connect/webhook handlers return 503 in that case so
+	// a misconfigured self-host deployment surfaces a clear error rather than
+	// silently storing plaintext. Wired in cmd/server/router.go after New.
+	ForgejoSecretBox *secretbox.Box
+	cfg              Config
 }
 
 func New(queries *db.Queries, txStarter txStarter, hub *realtime.Hub, bus *events.Bus, emailService *service.EmailService, store storage.Storage, cfSigner *auth.CloudFrontSigner, analyticsClient analytics.Client, cfg Config, daemonHubs ...*daemonws.Hub) *Handler {
