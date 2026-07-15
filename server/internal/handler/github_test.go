@@ -1952,6 +1952,46 @@ func TestWebhook_PullRequest_MetadataPreservesMergeable(t *testing.T) {
 	}
 }
 
+// TestWebhook_PullRequest_MergeConflictMetadata verifies the `merge_conflict`
+// issue-metadata key tracks the linked PR's dirty state: set to the PR
+// reference when the PR goes dirty, cleared once it is clean again.
+func TestWebhook_PullRequest_MergeConflictMetadata(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("handler test fixture not initialized (no DB?)")
+	}
+	ctx := context.Background()
+	const secret = "merge-conflict-meta-secret"
+	created, installationID := setupPRTestIssue(t, ctx, secret)
+
+	conflictValue := func() (string, bool) {
+		t.Helper()
+		issue, err := testHandler.Queries.GetIssue(ctx, parseUUID(created.ID))
+		if err != nil {
+			t.Fatalf("GetIssue: %v", err)
+		}
+		v, ok := parseIssueMetadata(issue.Metadata)[mergeConflictMetadataKey].(string)
+		return v, ok
+	}
+
+	// Open with no verdict: no conflict key yet.
+	firePullRequestWebhookWithHead(t, secret, created.Identifier, installationID, "ci-repo-f", 66, "opened", "head1", "")
+	if v, ok := conflictValue(); ok {
+		t.Fatalf("expected no merge_conflict key after open, got %q", v)
+	}
+
+	// A dirty verdict lands: key set to the PR reference.
+	firePullRequestWebhookWithHead(t, secret, created.Identifier, installationID, "ci-repo-f", 66, "labeled", "head1", "dirty")
+	if v, ok := conflictValue(); !ok || v != "acme/ci-repo-f#66" {
+		t.Fatalf("expected merge_conflict=acme/ci-repo-f#66, got %q (present=%v)", v, ok)
+	}
+
+	// Conflict resolved (clean): key cleared.
+	firePullRequestWebhookWithHead(t, secret, created.Identifier, installationID, "ci-repo-f", 66, "labeled", "head1", "clean")
+	if v, ok := conflictValue(); ok {
+		t.Fatalf("expected merge_conflict cleared after clean, got %q", v)
+	}
+}
+
 // TestListGitHubInstallations_RoleGating covers the read-only relaxation
 // in MUL-2413: the endpoint is now reachable by any workspace member, but
 // the handler strips the numeric installation_id and reports `can_manage`
