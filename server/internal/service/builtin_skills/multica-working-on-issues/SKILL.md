@@ -138,6 +138,12 @@ High-signal keys (reuse these names so queries stay consistent):
 Not metadata: logs, summaries, files touched, timestamps, attempt counts,
 investigation notes. Those belong in the result comment.
 
+System-managed key (do NOT hand-write): `merge_conflict` is set automatically by
+the GitHub webhook to the reference(s) of any working (open/draft) linked PR whose
+merge state is `dirty` (e.g. `owner/repo#123`), and cleared once the conflict is
+resolved. If you are triggered on an issue carrying `merge_conflict`, that PR needs
+its branch rebased/merged to clear the conflict. Leave the key to the webhook.
+
 ```bash
 multica issue metadata set <issue-id> --key pr_url --value <url>
 multica issue metadata delete <issue-id> --key <stale-key>

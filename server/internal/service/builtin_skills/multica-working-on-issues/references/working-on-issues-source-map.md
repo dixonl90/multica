@@ -151,6 +151,11 @@ wakes the parent assignee. Promoting the next stage's `backlog` sub-issues to
 `--value` is JSON-parsed by default (bool/number sniff); `--type` forces
 `string`/`number`/`bool`.
 
+System-managed `merge_conflict` key: the `pull_request` webhook reconciles it
+against the issue's working linked PRs via `syncIssueMergeConflictMetadata`
+(`server/internal/handler/github.go`), setting it to the dirty PR reference(s)
+and clearing it when none remain. Agents read it but must not hand-write it.
+
 ## Verification command
 
 Re-derive any line above before depending on it:

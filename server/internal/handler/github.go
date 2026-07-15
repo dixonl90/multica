@@ -976,6 +976,14 @@ func (h *Handler) handlePullRequestEvent(ctx context.Context, body []byte) {
 				}
 			}
 		}
+
+		// Mirror merge-conflict state into each linked issue's metadata bag.
+		// Runs on every PR event (not just terminal ones): `synchronize`/edit
+		// events are when GitHub re-computes mergeability, so this is where a
+		// conflict appears or clears.
+		for _, issue := range reevalIssues {
+			h.syncIssueMergeConflictMetadata(ctx, issue, workspaceID)
+		}
 	}
 
 	// Broadcast PR change to the workspace so any open issue detail page
@@ -1460,6 +1468,78 @@ func (h *Handler) advanceIssueToDone(ctx context.Context, issue db.Issue, worksp
 		"creator_type":   issue.CreatorType,
 		"creator_id":     uuidToString(issue.CreatorID),
 		"source":         "github_pr_merged",
+	})
+}
+
+// mergeConflictMetadataKey is the issue-metadata key that mirrors whether any
+// of the issue's working (open/draft) linked PRs currently has GitHub
+// mergeable_state = "dirty". Surfacing conflict state here (in addition to the
+// PR sidebar badge) makes it visible in the metadata bag the CLI and future
+// agent runs read on entry — so a human can spot the conflict and an agent
+// triggered on the issue knows to resolve it.
+const mergeConflictMetadataKey = "merge_conflict"
+
+// syncIssueMergeConflictMetadata reconciles the `merge_conflict` metadata key
+// against the issue's currently-linked PRs. It sets the key to the conflicting
+// PR reference(s) ("owner/repo#N") when any working PR is dirty, and clears it
+// otherwise. It is a no-op when the desired value already matches, so it can
+// be called on every PR webhook without generating spurious metadata churn or
+// realtime events.
+func (h *Handler) syncIssueMergeConflictMetadata(ctx context.Context, issue db.Issue, workspaceID string) {
+	rows, err := h.Queries.ListPullRequestsByIssue(ctx, issue.ID)
+	if err != nil {
+		slog.Warn("github: list linked PRs for conflict sync failed", "err", err, "issue_id", uuidToString(issue.ID))
+		return
+	}
+
+	// Collect refs of working PRs (open/draft) reporting a dirty merge state.
+	// Terminal PRs are excluded — a merged/closed PR's stale conflict verdict
+	// is no longer actionable, mirroring the PR sidebar's priority order.
+	// ponytail: join all dirty PRs; issues rarely have more than one working PR.
+	var refs []string
+	for _, pr := range rows {
+		if pr.State != "open" && pr.State != "draft" {
+			continue
+		}
+		if pr.MergeableState.Valid && pr.MergeableState.String == "dirty" {
+			refs = append(refs, fmt.Sprintf("%s/%s#%d", pr.RepoOwner, pr.RepoName, pr.PrNumber))
+		}
+	}
+
+	existing := parseIssueMetadata(issue.Metadata)
+	prev, hadKey := existing[mergeConflictMetadataKey].(string)
+
+	var updated db.Issue
+	if len(refs) == 0 {
+		if !hadKey {
+			return // already clear
+		}
+		updated, err = h.Queries.DeleteIssueMetadataKey(ctx, db.DeleteIssueMetadataKeyParams{
+			ID:          issue.ID,
+			WorkspaceID: issue.WorkspaceID,
+			Key:         mergeConflictMetadataKey,
+		})
+	} else {
+		desired := strings.Join(refs, ", ")
+		if hadKey && prev == desired {
+			return // already up to date
+		}
+		value, _ := json.Marshal(desired)
+		updated, err = h.Queries.SetIssueMetadataKey(ctx, db.SetIssueMetadataKeyParams{
+			ID:          issue.ID,
+			WorkspaceID: issue.WorkspaceID,
+			Key:         mergeConflictMetadataKey,
+			Value:       value,
+		})
+	}
+	if err != nil {
+		slog.Warn("github: sync merge_conflict metadata failed", "err", err, "issue_id", uuidToString(issue.ID))
+		return
+	}
+
+	h.publish(protocol.EventIssueMetadataChanged, workspaceID, "system", "", map[string]any{
+		"issue_id": uuidToString(updated.ID),
+		"metadata": parseIssueMetadata(updated.Metadata),
 	})
 }
 
